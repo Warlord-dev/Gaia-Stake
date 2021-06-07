@@ -942,24 +942,17 @@ contract GaiaLPStaking is ERC20, Ownable, ReentrancyGuard {
         uint256 rewardDebt;   // Reward debt.
     }
 
-    // Info of each pool.
-    struct PoolInfo {
-        uint256 perBlockGaiaAllocated;
-        uint256 lastRewardBlock;
-        uint256 accGaiaPerShare;
-    }
-
+    uint256 public lastRewardBlock;
+    uint256 public accGaiaPerShare;
     IERC20 public gaiaTokenContract;
     uint256 public gaiaRewardPerBlock;
 
-    PoolInfo[] public poolInfo;
-    mapping (uint256 => mapping (address => UserInfo)) public userInfo;
-    uint256 public totalAllocGaiaPerBlock = 0;
+    mapping (address => UserInfo) public userInfo;
     uint256 public startBlock;
 
-    event Deposit(address indexed user, uint256 indexed pid, uint256 amount);
-    event Withdraw(address indexed user, uint256 indexed pid, uint256 amount);
-    event EmergencyWithdraw(address indexed user, uint256 indexed pid, uint256 amount);
+    event Deposit(address indexed user, uint256 amount);
+    event Withdraw(address indexed user,  uint256 amount);
+    event EmergencyWithdraw(address indexed user, uint256 amount);
     event ContractFunded(address indexed from, uint256 amount);
 
     constructor(
@@ -971,36 +964,16 @@ contract GaiaLPStaking is ERC20, Ownable, ReentrancyGuard {
     ) {
     }
 
-    function init(IERC20 _token, uint256 _gaiaPerBlock, uint256 _startBlock) public {
+    function init(IERC20 _token, uint256 _gaiaPerBlock) public {
         gaiaTokenContract = _token;
         gaiaRewardPerBlock = _gaiaPerBlock;
-        startBlock = _startBlock;
-        addPool(_gaiaPerBlock, false);
+        accGaiaPerShare = 0;
+        startBlock = block.number;
+        lastRewardBlock = block.number;
     }
 
-    function poolLength() external view returns (uint256) {
-        return poolInfo.length;
-    }
-
-    function addPool(uint256 _gaiaPerBlock, bool _withUpdate) public onlyOwner {
-        if (_withUpdate) {
-            massUpdatePools();
-        }
-        uint256 lastRewardBlock = block.number > startBlock ? block.number : startBlock;
-        totalAllocGaiaPerBlock = totalAllocGaiaPerBlock.add(_gaiaPerBlock);
-        poolInfo.push(PoolInfo({
-            perBlockGaiaAllocated: _gaiaPerBlock,
-            lastRewardBlock: lastRewardBlock,
-            accGaiaPerShare: 0
-        }));
-    }
-
-    function setPool(uint256 _poolId, uint256 _gaiaPerBlock, bool _withUpdate) public onlyOwner {
-        if (_withUpdate) {
-            massUpdatePools();
-        }
-        totalAllocGaiaPerBlock = totalAllocGaiaPerBlock.sub(poolInfo[_poolId].perBlockGaiaAllocated).add(_gaiaPerBlock);
-        poolInfo[_poolId].perBlockGaiaAllocated = _gaiaPerBlock;
+    function setRewardPerBlock(uint256 _gaiaPerBlock) public onlyOwner {
+        gaiaRewardPerBlock = _gaiaPerBlock;
     }
 
     function fund(address _from, uint256 _amount) public {
@@ -1011,118 +984,110 @@ contract GaiaLPStaking is ERC20, Ownable, ReentrancyGuard {
         emit ContractFunded(_from, _amount);
     }
     
-    function getMultiplier(uint256 _from, uint256 _to) public pure returns (uint256) {
-        return _to.sub(_from);
+    function getMultiplier() public view returns (uint256) {
+        if (block.number >= lastRewardBlock) {
+            return block.number.sub(lastRewardBlock);
+        } else {
+            return 0;
+        } 
     }
 
-    function pendingGaiaReward(uint256 _poolId, address _user) external view returns (uint256) {
-        PoolInfo storage pool = poolInfo[_poolId];
-        UserInfo storage user = userInfo[_poolId][_user];
-        uint256 accGaiaPerShare = pool.accGaiaPerShare;
-        uint256 lpSupply = gaiaTokenContract.balanceOf(address(this));
+    function pendingGaiaReward(address _user) external view returns (uint256) {
+        UserInfo storage user = userInfo[_user];
+        uint256 _accGaiaPerShare = accGaiaPerShare;
+        uint256 lpSupply = totalSupply();
         if (lpSupply < 0) {
             return 0;
         }
-        uint256 multiplier = getMultiplier(pool.lastRewardBlock, block.number);
-        uint256 gaiaReward = multiplier.mul(gaiaRewardPerBlock).mul(pool.perBlockGaiaAllocated).div(totalAllocGaiaPerBlock);
-        accGaiaPerShare = accGaiaPerShare.add(gaiaReward.mul(1e12).div(lpSupply));
-        return user.amount.mul(accGaiaPerShare).div(1e12).sub(user.rewardDebt);
+
+        if (block.number > lastRewardBlock && lpSupply != 0) {
+            uint256 multiplier = getMultiplier();
+            uint256 gaiaReward = multiplier.mul(_accGaiaPerShare);
+            _accGaiaPerShare = _accGaiaPerShare.add(gaiaReward.mul(1e12).div(lpSupply));
+        }
+        return user.amount.mul(_accGaiaPerShare).div(1e12).sub(user.rewardDebt);
+
     }
 
-    function harvest(uint256 _poolId, address _user) external returns (uint256) {
-        PoolInfo storage pool = poolInfo[_poolId];
-        UserInfo storage user = userInfo[_poolId][_user];
+    function harvest(address _user) external returns (uint256) {
+        UserInfo storage user = userInfo[_user];
         if (user.amount > 0) {
-            uint256 pending = user.amount.mul(pool.accGaiaPerShare).div(1e12).sub(user.rewardDebt);
+            uint256 pending = user.amount.mul(accGaiaPerShare).div(1e12).sub(user.rewardDebt);
             safeGaiaTransfer(msg.sender, pending);
             return pending;
         }
         return 0;
     }
 
-    function getLockedGaiaView() external view returns (uint256) {
-        return gaiaTokenContract.balanceOf(address(this));
-    }
-
-    // Update reward variables for all pools. Be careful of gas spending!
-    function massUpdatePools() public {
-        uint256 length = poolInfo.length;
-        for (uint256 pid = 0; pid < length; ++pid) {
-            updatePool(pid);
-        }
-    }
-
     // Update pool supply and reward variables of the given pool to be up-to-date.
-    function updatePool(uint256 _poolId) public {
-        PoolInfo storage pool = poolInfo[_poolId];
-        if (block.number <= pool.lastRewardBlock) {
+    function updatePool() public {
+        if (block.number <= lastRewardBlock) {
             return;
         }
-        uint256 lpSupply = gaiaTokenContract.balanceOf(address(this));
+        uint256 lpSupply = totalSupply();
         if (lpSupply == 0) {
-            pool.lastRewardBlock = block.number;
+            lastRewardBlock = block.number;
             return;
         }
-        uint256 multiplier = getMultiplier(pool.lastRewardBlock, block.number);
-        uint256 gaiaReward = multiplier.mul(gaiaRewardPerBlock).mul(pool.perBlockGaiaAllocated).div(totalAllocGaiaPerBlock);
-        pool.accGaiaPerShare = pool.accGaiaPerShare.add(gaiaReward.mul(1e12).div(lpSupply));
+        uint256 multiplier = getMultiplier();
+        uint256 gaiaReward = multiplier.mul(gaiaRewardPerBlock);
+        accGaiaPerShare = accGaiaPerShare.add(gaiaReward.mul(1e12).div(lpSupply));
 
-        pool.lastRewardBlock = block.number;
+        lastRewardBlock = block.number;
     }
 
     // Deposit tokens to Contract for RIO allocation.
-    function deposit(uint256 _poolId, uint256 _amount) public {
-        PoolInfo storage pool = poolInfo[_poolId];
-        UserInfo storage user = userInfo[_poolId][msg.sender];
-        updatePool(_poolId);
+    function deposit(uint256 _amount) public {
+        UserInfo storage user = userInfo[msg.sender];
+        updatePool();
         // if user already has LP tokens in the pool execute harvest for the user
         if (user.amount > 0) {
-            uint256 pending = user.amount.mul(pool.accGaiaPerShare).div(1e12).sub(user.rewardDebt);
-            safeGaiaTransfer(msg.sender, pending);
+            uint256 pending = user.amount.mul(accGaiaPerShare).div(1e12).sub(user.rewardDebt);
+            if(pending > 0) {
+                safeGaiaTransfer(msg.sender, pending);
+            }
         }
         gaiaTokenContract.safeTransferFrom(address(msg.sender), address(this), _amount);
         user.amount = user.amount.add(_amount);
         _mint(msg.sender, _amount);
-        user.rewardDebt = user.amount.mul(pool.accGaiaPerShare).div(1e12);
+        user.rewardDebt = user.amount.mul(accGaiaPerShare).div(1e12);
 
-        emit Deposit(msg.sender, _poolId, _amount);
+        emit Deposit(msg.sender, _amount);
     }
 
-    // Deposit tokens to Contract for RIO allocation.
-    function depositAll(uint256 _poolId) public {
-        deposit(_poolId, gaiaTokenContract.balanceOf(msg.sender));
+    function depositAll() public {
+        deposit(gaiaTokenContract.balanceOf(msg.sender));
     }
 
     // Withdraw tokens from Contract.
-    function withdraw(uint256 _pid, uint256 _amount) public {
-        PoolInfo storage pool = poolInfo[_pid];
-        UserInfo storage user = userInfo[_pid][msg.sender];
+    function withdraw(uint256 _amount) public {
+        UserInfo storage user = userInfo[msg.sender];
         require(user.amount >= _amount, "withdraw: not good");
-        updatePool(_pid);
-        uint256 pending = user.amount.mul(pool.accGaiaPerShare).div(1e12).sub(user.rewardDebt);
+        updatePool();
+        uint256 pending = user.amount.mul(accGaiaPerShare).div(1e12).sub(user.rewardDebt);
 
         safeGaiaTransfer(address(msg.sender), pending);
         user.amount = user.amount.sub(_amount);
-        user.rewardDebt = user.amount.mul(pool.accGaiaPerShare).div(1e12);
+        user.rewardDebt = user.amount.mul(accGaiaPerShare).div(1e12);
 
         gaiaTokenContract.safeTransfer(address(msg.sender), _amount);
         _burn(msg.sender, _amount);
-        emit Withdraw(msg.sender, _pid, _amount);
+        emit Withdraw(msg.sender, _amount);
     }
 
-    function withdrawAll(uint256 _pid) public {
-        UserInfo storage user = userInfo[_pid][msg.sender];
-        withdraw(_pid, user.amount);
+    function withdrawAll() public {
+        UserInfo storage user = userInfo[msg.sender];
+        withdraw(user.amount);
     }
 
     // Withdraw without caring about rewards. EMERGENCY ONLY.
-    function emergencyWithdraw(uint256 _pid) public {
-        UserInfo storage user = userInfo[_pid][msg.sender];
+    function emergencyWithdraw() public {
+        UserInfo storage user = userInfo[msg.sender];
         require(user.amount > 0, "nothing to withdraw");
 
         gaiaTokenContract.safeTransfer(address(msg.sender), user.amount);
         _burn(msg.sender, user.amount);
-        emit EmergencyWithdraw(msg.sender, _pid, user.amount);
+        emit EmergencyWithdraw(msg.sender, user.amount);
         user.amount = 0;
     }
 
