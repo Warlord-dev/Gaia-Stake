@@ -964,7 +964,7 @@ contract GaiaLPStaking is ERC20, Ownable, ReentrancyGuard {
     ) {
     }
 
-    function init(IERC20 _token, uint256 _gaiaPerBlock) public {
+    function init(IERC20 _token, uint256 _gaiaPerBlock) public onlyOwner {
         gaiaTokenContract = _token;
         gaiaRewardPerBlock = _gaiaPerBlock;
         accGaiaPerShare = 0;
