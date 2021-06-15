@@ -1011,6 +1011,7 @@ contract GaiaLPStaking is ERC20, Ownable, ReentrancyGuard {
 
     function harvest(address _user) external returns (uint256) {
         UserInfo storage user = userInfo[_user];
+        updatePool();
         if (user.amount > 0) {
             uint256 pending = user.amount.mul(accGaiaPerShare).div(1e12).sub(user.rewardDebt);
             safeGaiaTransfer(msg.sender, pending);
@@ -1066,11 +1067,11 @@ contract GaiaLPStaking is ERC20, Ownable, ReentrancyGuard {
         updatePool();
         uint256 pending = user.amount.mul(accGaiaPerShare).div(1e12).sub(user.rewardDebt);
 
-        safeGaiaTransfer(address(msg.sender), pending);
+        safeGaiaTransfer(msg.sender, pending);
         user.amount = user.amount.sub(_amount);
         user.rewardDebt = user.amount.mul(accGaiaPerShare).div(1e12);
 
-        gaiaTokenContract.safeTransfer(address(msg.sender), _amount);
+        safeGaiaTransfer(msg.sender, _amount);
         _burn(msg.sender, _amount);
         emit Withdraw(msg.sender, _amount);
     }
@@ -1085,7 +1086,7 @@ contract GaiaLPStaking is ERC20, Ownable, ReentrancyGuard {
         UserInfo storage user = userInfo[msg.sender];
         require(user.amount > 0, "nothing to withdraw");
 
-        gaiaTokenContract.safeTransfer(address(msg.sender), user.amount);
+        safeGaiaTransfer(msg.sender, user.amount);
         _burn(msg.sender, user.amount);
         emit EmergencyWithdraw(msg.sender, user.amount);
         user.amount = 0;
