@@ -1002,7 +1002,7 @@ contract GaiaLPStaking is ERC20, Ownable, ReentrancyGuard {
 
         if (block.number > lastRewardBlock && lpSupply != 0) {
             uint256 multiplier = getMultiplier();
-            uint256 gaiaReward = multiplier.mul(_accGaiaPerShare);
+            uint256 gaiaReward = multiplier.mul(gaiaRewardPerBlock);
             _accGaiaPerShare = _accGaiaPerShare.add(gaiaReward.mul(1e12).div(lpSupply));
         }
         return user.amount.mul(_accGaiaPerShare).div(1e12).sub(user.rewardDebt);
